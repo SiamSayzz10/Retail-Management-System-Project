@@ -1,0 +1,1384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Retail Management System - Role-Based Access</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <script type="module">
+        // Placeholder for environment variables—they are not used since we are connecting to a local Flask API.
+        // We keep this structure simple and focused on the Flask API connection.
+        
+        console.log("Retail Management System Frontend Initialized (Connecting to Flask API)");
+
+    </script>
+    <style>
+        /* --- VIDEO BACKGROUND STYLING --- */
+        #mainMenuVideo {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover; /* Ensures video covers the whole screen */
+            z-index: -1;      /* Places video behind all content */
+            opacity: 0.8;     /* Keep content legible by dimming the video slightly */
+        }
+        
+        /* --- GENERAL UI STYLING --- */
+        /* Make the body background black when the video is present so there is no flash of white */
+        body {
+            background-color: #1a1a1a;
+        }
+
+        /* A little style for better usability */
+        .role-card {
+            transition: all 0.2s ease-in-out;
+            cursor: pointer;
+        }
+        /* Make the cards 'pop' when you hover over them */
+        .role-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.2);
+        }
+        .dashboard-tile {
+            transition: transform 0.1s;
+        }
+        .dashboard-tile:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 10px rgba(0, 0, 0, 0.1);
+        }
+        /* Styling the scrollbar so the lists look nicer */
+        .scroll-list {
+            max-height: 400px;
+            overflow-y: auto;
+            scrollbar-width: thin;
+            scrollbar-color: #4F46E5 #E5E7EB;
+        }
+    </style>
+    <script>
+        // Customizing the Tailwind theme to use our preferred font and brand colors
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                    colors: {
+                        'primary-indigo': '#4F46E5', // Main brand color
+                        'secondary-teal': '#14B8A6', // Secondary accent color
+                    }
+                }
+            }
+        }
+
+        const API_BASE_URL = 'http://127.0.0.1:5000/api';
+        
+        // Global State Management
+        let appState = {
+            currentView: 'mainMenu',
+            selectedRole: null,
+            userId: null,
+            cart: [], // Temporary storage for Cashier transactions
+            inventory: [], // Cache for Inventory/Staff view (filled by API)
+            shipmentRecords: [], // Cache for Shipment Manager view (filled by API)
+            salesRecords: [], // Cache for Owner view (filled by API)
+            userProfiles: [], // Cache for Owner user list (filled by API)
+            selectedCashierProduct: null, // Track selected product for cashier
+            editingProductId: null, // ADDED: Track which product is being edited
+        };
+
+        // Configuration mapping for each role card
+        const roleMapping = {
+            'Owner': { icon: 'crown', color: 'red-600', dashboard: 'ownerDashboard', description: 'User Management & Full Data Access' },
+            'Inventory Manager': { icon: 'archive', color: 'orange-600', dashboard: 'inventoryDashboard', description: 'Add, Update, & Manage Stock' },
+            'Cashier': { icon: 'dollar-sign', color: 'green-600', dashboard: 'cashierDashboard', description: 'Sales & Automatic Receipt Generation' },
+            'Shipment Manager': { icon: 'truck', color: 'blue-600', dashboard: 'shipmentDashboard', description: 'Manage Shipping Records' },
+            'Staff': { icon: 'user', color: 'secondary-teal', dashboard: 'staffDashboard', description: 'Product Search & Price Check' },
+        };
+        
+        // Generic API Request Handler
+        async function apiRequest(endpoint, method = 'GET', data = null) {
+            const url = `${API_BASE_URL}${endpoint}`;
+            const options = {
+                method: method,
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            };
+            if (data) {
+                options.body = JSON.stringify(data);
+            }
+
+            try {
+                const response = await fetch(url, options);
+                const result = await response.json();
+
+                if (!response.ok) {
+                    const errorMsg = result.error || `HTTP Error ${response.status}: Failed to process request.`;
+                    console.error(`API Error on ${method} ${endpoint}:`, errorMsg);
+                    return { success: false, error: errorMsg, status: response.status };
+                }
+
+                return { success: true, data: result };
+
+            } catch (error) {
+                console.error(`Network or Parsing Error on ${endpoint}:`, error);
+                return { success: false, error: 'Network error or unable to parse response.' };
+            }
+        }
+
+        // --- Core UI Functions for Switching Screens ---
+        function changeView(viewId) {
+            
+            // Clear login credentials every time we transition away
+            const userIdInput = document.getElementById('user-id');
+            const passwordInput = document.getElementById('password');
+            if (userIdInput) userIdInput.value = '';
+            if (passwordInput) passwordInput.value = '';
+
+            // Hide all potential views first
+            const views = ['mainMenu', 'loginScreen', 'ownerDashboard', 'inventoryDashboard', 'cashierDashboard', 'shipmentDashboard', 'staffDashboard'];
+            views.forEach(id => {
+                document.getElementById(id).classList.add('hidden');
+            });
+            
+            // Show the target view
+            document.getElementById(viewId).classList.remove('hidden');
+            appState.currentView = viewId;
+            
+            // Re-render icons on the new screen (Lucide requirement)
+            lucide.createIcons();
+            
+            // Call specific setup functions needed for the dashboard views
+            if (viewId === 'cashierDashboard') { 
+                renderCart(); 
+                fetchInventoryAndRender('cashierDashboard');
+            }
+            if (viewId === 'inventoryDashboard' || viewId === 'staffDashboard') { 
+                fetchInventoryAndRender(viewId); 
+            }
+            if (viewId === 'shipmentDashboard') { 
+                fetchShipmentsAndRender('shipmentDashboard'); 
+            }
+            if (viewId === 'ownerDashboard') { 
+                // Default to showing the Inventory Report on load
+                toggleOwnerReport('inventory');
+                updateOwnerMetrics();
+            }
+
+            // Manage the video background visibility
+            const video = document.getElementById('mainMenuVideo');
+            const body = document.body;
+
+            if (video) {
+                if (viewId === 'mainMenu') {
+                    video.classList.remove('hidden');
+                    body.classList.remove('bg-gray-100'); // Ensure background is dark for video menu
+                    body.classList.add('bg-[#1a1a1a]'); 
+                } else {
+                    video.classList.add('hidden');
+                    body.classList.remove('bg-[#1a1a1a]'); // Ensure background is light for dashboards
+                    body.classList.add('bg-[#f7f7f7]'); // Use light background for dashboards
+                }
+            }
+        }
+
+        // Sets up the login screen based on the chosen role
+        function selectRole(roleName) {
+            appState.selectedRole = roleName;
+            const roleData = roleMapping[roleName];
+
+            const loginTitle = document.getElementById('login-role-title');
+            const loginIcon = document.getElementById('login-role-icon');
+
+            loginTitle.textContent = `${roleName} Login`;
+            loginIcon.setAttribute('data-lucide', roleData.icon);
+            loginIcon.className = 'w-10 h-10 mx-auto mb-2';
+            loginIcon.classList.add(`text-${roleData.color}`); // Set icon color
+
+            changeView('loginScreen');
+        }
+
+        // Handles the simulated login process
+        async function attemptLogin() {
+            const role = appState.selectedRole;
+            const userId = document.getElementById('user-id').value;
+            const password = document.getElementById('password').value; 
+
+            if (!userId || !password) {
+                alertMessage('Hey, you need to enter both a User ID and a Password!', 'error');
+                return;
+            }
+            
+            // Password validation before API call
+            if (password.length < 8) {
+                alertMessage('Password must be at least 8 characters long.', 'error');
+                return;
+            }
+
+            const response = await apiRequest('/login', 'POST', { userId, password, role });
+            
+            if (response.success) {
+                appState.userId = response.data.userId;
+                const targetDashboard = roleMapping[role].dashboard;
+                
+                // Update the user info display on all dashboards
+                document.querySelectorAll('.dashboard-user-info').forEach(el => {
+                    el.textContent = `Logged in as: ${role} (${appState.userId})`;
+                });
+
+                alertMessage(`Welcome back, ${appState.userId}! Taking you to the ${role} Dashboard...`, 'success');
+                
+                setTimeout(() => {
+                    changeView(targetDashboard);
+                }, 500);
+
+            } else {
+                alertMessage(`Login failed. ${response.error}`, 'error');
+            }
+        }
+
+        // Generic function to display temporary messages (instead of using alert())
+        function alertMessage(message, type) {
+            const alertBox = document.getElementById('status-alert');
+            alertBox.textContent = message;
+            
+            alertBox.classList.remove('bg-green-100', 'bg-red-100', 'text-green-800', 'text-red-800', 'hidden', 'bg-red-200', 'text-red-900');
+            
+            if (type === 'success') {
+                alertBox.classList.add('bg-green-100', 'text-green-800');
+            } else if (type === 'error') {
+                alertBox.classList.add('bg-red-200', 'text-red-900');
+            } else {
+                 alertBox.classList.add('bg-gray-200', 'text-gray-800');
+            }
+
+            setTimeout(() => {
+                alertBox.classList.add('hidden');
+            }, 3000);
+        }
+
+        // --- Owner Functions ---
+        
+        // Fetch and Update Metrics
+        async function updateOwnerMetrics() {
+            // Fetch necessary data to calculate metrics
+            const salesResponse = await apiRequest('/sales');
+            const inventoryResponse = await apiRequest('/products');
+            const usersResponse = await apiRequest('/users');
+
+            if (salesResponse.success && inventoryResponse.success && usersResponse.success) {
+                const sales = salesResponse.data;
+                const inventory = inventoryResponse.data;
+                const users = usersResponse.data;
+                
+                // Calculate Total Sales (YTD)
+                const totalSalesYTD = sales.reduce((sum, record) => sum + record.total, 0);
+                // Calculate Low Stock Items (stock < 10)
+                const lowStockItems = inventory.filter(item => item.stock < 10).length;
+                
+                document.getElementById('metric-total-users').textContent = users.length;
+                document.getElementById('metric-total-sales').textContent = `$${totalSalesYTD.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",")}`; // Format with commas
+                document.getElementById('metric-low-stock').textContent = lowStockItems;
+
+                // Update appState cache
+                appState.salesRecords = sales;
+                appState.inventory = inventory;
+                appState.userProfiles = users;
+            } else {
+                 console.error("Failed to load metrics data.");
+            }
+        }
+
+
+        // Toggles which report/list is visible in the main panel
+        function toggleOwnerReport(reportId) {
+            
+            const reports = ['inventory', 'sales', 'shipment', 'users'];
+            reports.forEach(id => {
+                 const container = document.getElementById(`owner-report-${id}`);
+                 if (container) container.classList.add('hidden');
+                 const button = document.getElementById(`btn-report-${id}`);
+                 if (button) {
+                     button.classList.remove('bg-red-700', 'text-white');
+                     button.classList.add('bg-red-50', 'text-red-700');
+                 }
+            });
+
+            // Show the selected report container
+            const targetContainer = document.getElementById(`owner-report-${reportId}`);
+            if (targetContainer) targetContainer.classList.remove('hidden');
+            
+            // Add 'active' styling to the selected button
+            const targetButton = document.getElementById(`btn-report-${reportId}`);
+            if (targetButton) {
+                targetButton.classList.remove('bg-red-50', 'text-red-700');
+                targetButton.classList.add('bg-red-700', 'text-white');
+            }
+
+            // Render the specific list content
+            if (reportId === 'inventory') renderInventoryList('ownerDashboard');
+            if (reportId === 'sales') renderSalesRecords();
+            if (reportId === 'shipment') fetchShipmentsAndRender('ownerDashboard');
+            if (reportId === 'users') fetchUsersAndRender();
+            
+            // Clear search input when switching reports
+            document.querySelectorAll('.owner-search-input').forEach(input => input.value = '');
+        }
+
+        // Renders the mock sales records
+        function renderSalesRecords() {
+            const listContainer = document.getElementById('owner-sales-list');
+            const records = appState.salesRecords;
+            const query = document.getElementById('owner-report-sales-search').value.toLowerCase();
+            
+            if (records.length === 0) {
+                 listContainer.innerHTML = '<p class="text-center text-gray-500 py-6">No sales records available.</p>';
+                 return;
+            }
+
+            let html = '';
+            
+            const filteredRecords = records.filter(record => 
+                !query || 
+                record.sale_id.toString().includes(query) || 
+                record.cashier_id.toLowerCase().includes(query) ||
+                record.sale_date.includes(query)
+            );
+
+            filteredRecords.forEach(record => {
+                html += `
+                    <div class="flex justify-between items-center p-3 border-b hover:bg-gray-50">
+                        <div class="flex-grow">
+                            <p class="font-medium text-gray-800">Sale ID: ${record.sale_id}</p>
+                            <p class="text-sm text-gray-600">Cashier: ${record.cashier_id}</p>
+                        </div>
+                        <div class="text-right">
+                            <p class="font-bold text-lg text-green-600">$${record.total.toFixed(2)}</p>
+                            <p class="text-xs text-gray-500">${record.sale_date} (${record.items_count} items)</p>
+                        </div>
+                    </div>
+                `;
+            });
+            
+            if (filteredRecords.length === 0) {
+                 html = '<p class="text-center text-gray-500 py-6">No sales records match your search.</p>';
+            }
+
+            listContainer.innerHTML = html;
+        }
+        
+        // Fetches and Renders User Profiles (Owner)
+        async function fetchUsersAndRender() {
+            const listContainer = document.getElementById('owner-users-list');
+            listContainer.innerHTML = '<p class="text-center py-6 text-gray-500">Loading user data...</p>';
+
+            const response = await apiRequest('/users');
+            if (!response.success) {
+                listContainer.innerHTML = `<p class="text-center py-6 text-red-600">Failed to load users: ${response.error}</p>`;
+                return;
+            }
+            
+            appState.userProfiles = response.data;
+            renderUserProfiles();
+        }
+
+        // Renders the user profiles from cache
+        function renderUserProfiles() {
+            const listContainer = document.getElementById('owner-users-list');
+            const users = appState.userProfiles;
+            const query = document.getElementById('owner-report-users-search').value.toLowerCase();
+            
+            let html = '';
+            
+            const filteredUsers = users.filter(user => 
+                !query || 
+                user.user_id.toLowerCase().includes(query) || 
+                user.role.toLowerCase().includes(query)
+            );
+
+            filteredUsers.forEach(user => {
+                html += `
+                    <div class="flex justify-between items-center p-3 border-b hover:bg-gray-50">
+                        <div class="flex-grow">
+                            <p class="font-medium text-gray-800">User ID: ${user.user_id}</p>
+                            <p class="text-sm text-gray-600">Role: <span class="font-semibold text-primary-indigo">${user.role}</span></p>
+                        </div>
+                        <div class="text-right flex space-x-4 items-center">
+                            <p class="text-sm font-bold text-gray-700">Password: ${user.password}</p>
+                            <button onclick="changeUserPassword('${user.user_id}')" class="bg-yellow-500 text-white px-3 py-1 rounded-md text-xs hover:bg-yellow-600 transition font-medium shadow-sm">Change Password</button>
+                            <button onclick="deleteUser('${user.user_id}')" class="bg-red-600 text-white px-3 py-1 rounded-md text-xs hover:bg-red-700 transition font-medium shadow-sm">Delete</button>
+                        </div>
+                    </div>
+                `;
+            });
+            
+             if (filteredUsers.length === 0) {
+                 html = '<p class="text-center text-gray-500 py-6">No user profiles match your search.</p>';
+            }
+
+            listContainer.innerHTML = html;
+        }
+
+        // OWNER ACTION: Delete User
+        async function deleteUser(userId) {
+            // Note: Using window.prompt here as a custom modal UI was not requested.
+            const confirmDelete = window.prompt(`Type DELETE to confirm removal of user: ${userId}. This action cannot be undone.`);
+            
+            if (confirmDelete !== 'DELETE') {
+                alertMessage('User deletion cancelled.', 'error');
+                return;
+            }
+
+            const response = await apiRequest(`/users/${userId}`, 'DELETE');
+            
+            if (response.success) {
+                alertMessage(`User ${userId} deleted successfully!`, 'success');
+                fetchUsersAndRender(); // Refresh list
+                updateOwnerMetrics();
+            } else {
+                alertMessage(`Failed to delete user: ${response.error}`, 'error');
+            }
+        }
+        
+        // OWNER ACTION: Change User Password
+        async function changeUserPassword(userId) {
+            // Note: Using window.prompt here as a custom modal UI was not requested.
+            const newPassword = window.prompt(`Enter NEW password for user ${userId}. Must be at least 8 characters.`);
+            
+            if (!newPassword) {
+                alertMessage('Password change cancelled.', 'error');
+                return;
+            }
+            
+            if (newPassword.length < 8) {
+                alertMessage('Password change failed: Password must be at least 8 characters long.', 'error');
+                return;
+            }
+
+            const response = await apiRequest(`/users/${userId}/password`, 'PUT', { newPassword });
+            
+            if (response.success) {
+                alertMessage(`Password for ${userId} updated successfully!`, 'success');
+                fetchUsersAndRender(); // Refresh list to show new password
+            } else {
+                alertMessage(`Failed to change password: ${response.error}`, 'error');
+            }
+        }
+
+
+        // Simulates creating a new user profile
+        async function createNewProfile() {
+            const userId = document.getElementById('new-profile-name').value;
+            const password = document.getElementById('new-profile-password').value;
+            const role = document.getElementById('new-profile-role').value;
+            
+            if (!userId || !role || !password) {
+                alertMessage('Make sure to fill in the User ID, Password, and select a Role, please.', 'error');
+                return;
+            }
+            
+            // Password validation before API call
+            if (password.length < 8) {
+                alertMessage('Password must be at least 8 characters long.', 'error');
+                return;
+            }
+
+            const response = await apiRequest('/users', 'POST', { userId, password, role });
+            
+            if (response.success) {
+                alertMessage(`Profile created for ${userId} (${role})!`, 'success');
+                
+                // Clear the form
+                document.getElementById('new-profile-name').value = '';
+                document.getElementById('new-profile-password').value = '';
+                document.getElementById('new-profile-role').value = ''; 
+                
+                updateOwnerMetrics();
+                // Refresh the list if the user profiles report is currently visible
+                if(appState.currentView === 'ownerDashboard' && document.getElementById('owner-report-users').classList.contains('hidden') === false) {
+                     fetchUsersAndRender();
+                }
+            } else {
+                alertMessage(`Failed to create profile: ${response.error}`, 'error');
+            }
+        }
+        
+        // --- Staff & Inventory Manager Functions (Inventory List Management) ---
+        
+        async function fetchInventoryAndRender(dashboardId) {
+            const listContainerId = (dashboardId === 'inventoryDashboard' ? 'inventoryDashboard-inventory-list' : dashboardId === 'staffDashboard' ? 'staffDashboard-inventory-list' : 'owner-inventory-list');
+            const listContainer = document.getElementById(listContainerId);
+            if (!listContainer) return;
+            
+            listContainer.innerHTML = '<p class="text-center py-6 text-gray-500">Loading product data...</p>';
+            
+            const response = await apiRequest('/products');
+            if (!response.success) {
+                listContainer.innerHTML = `<p class="text-center py-6 text-red-600">Failed to load inventory: ${response.error}</p>`;
+                return;
+            }
+            
+            appState.inventory = response.data; // Cache inventory data
+            
+            if (dashboardId === 'cashierDashboard') {
+                renderProductListForCashier();
+            } else {
+                renderInventoryList(dashboardId); // Render from cache
+            }
+        }
+        
+        function renderInventoryList(dashboardId) {
+            
+            let listContainerId = (dashboardId === 'inventoryDashboard' ? 'inventoryDashboard-inventory-list' : dashboardId === 'staffDashboard' ? 'staffDashboard-inventory-list' : 'owner-inventory-list');
+            let searchInputId = (dashboardId === 'inventoryDashboard' ? 'inventoryDashboard-search-input' : dashboardId === 'staffDashboard' ? 'staffDashboard-search-input' : 'owner-report-inventory-search');
+
+            const listContainer = document.getElementById(listContainerId);
+            const query = document.getElementById(searchInputId) ? document.getElementById(searchInputId).value.toLowerCase() : '';
+            const inventory = appState.inventory;
+            
+            if (!listContainer) return;
+            
+            let html = '';
+            
+            inventory.forEach(item => {
+                // Check if item matches search query
+                if (query && !(item.name.toLowerCase().includes(query) || item.product_id.toString().includes(query))) {
+                    return; // Skip if no match
+                }
+                
+                // Content changes based on role
+                let statusContent;
+                let actionButtons = '';
+                
+                if (dashboardId === 'inventoryDashboard' || dashboardId === 'ownerDashboard') {
+                    // Inventory Manager/Owner sees stock number
+                    const stockColor = item.stock < 10 ? 'text-red-500 font-bold' : 'text-green-500';
+                    statusContent = `<p class="${stockColor}">Stock: ${item.stock}</p>`;
+                    
+                    if (dashboardId === 'inventoryDashboard') {
+                        // Inventory Manager sees action buttons
+                        actionButtons = `
+                            <button onclick="editProduct(${item.product_id})" class="bg-primary-indigo text-white px-2 py-1 rounded-md text-xs hover:bg-indigo-700">Edit</button>
+                            <button onclick="deleteProduct(${item.product_id})" class="bg-red-500 text-white px-2 py-1 rounded-md text-xs hover:bg-red-700">Delete</button>
+                        `;
+                    }
+                } else if (dashboardId === 'staffDashboard') {
+                    // Staff sees general availability
+                    const availability = item.stock > 0 ? 'text-green-600' : 'text-red-600';
+                    statusContent = `<p class="text-sm font-medium ${availability}">Availability: ${item.stock > 0 ? 'In Stock' : 'Out of Stock'}</p>`;
+                }
+
+                html += `
+                    <div class="flex justify-between items-center p-3 border-b hover:bg-gray-50">
+                        <div class="flex-grow">
+                            <p class="font-medium text-gray-800">${item.name} <span class="text-xs text-gray-400">#${item.product_id}</span></p>
+                            <p class="text-sm text-gray-600">Price: $${item.price.toFixed(2)}</p>
+                        </div>
+                        <div class="text-right flex items-center space-x-2">
+                            ${statusContent}
+                            ${actionButtons}
+                        </div>
+                    </div>
+                `;
+            });
+            
+             if (html === '') {
+                 html = '<p class="text-center text-gray-500 py-6">No products match your search or no products are available.</p>';
+            }
+
+
+            listContainer.innerHTML = html;
+            if (dashboardId === 'ownerDashboard') {
+                updateOwnerMetrics(); // Keep metrics up to date if rendering for owner
+            }
+        }
+
+        // Basic client-side search filtering (only called by Owner, Inventory, Staff)
+        function searchInventory(dashboardId) {
+            // Re-render the list with the current search query
+            renderInventoryList(dashboardId);
+        }
+
+        // Inventory Manager Logic (Writing to 'Database')
+        async function addOrUpdateProduct() {
+            const name = document.getElementById('product-name').value;
+            const price = parseFloat(document.getElementById('product-price').value);
+            const stock = parseInt(document.getElementById('product-stock').value);
+
+            if (!name || isNaN(price) || isNaN(stock)) {
+                alertMessage('Please enter valid Name, Price, and Stock numbers.', 'error');
+                return;
+            }
+
+            let response;
+            // Check if we are editing an existing product or creating a new one
+            if (appState.editingProductId) {
+                // Edit Mode: Send PUT request
+                response = await apiRequest(`/products/${appState.editingProductId}`, 'PUT', { name, price, stock });
+            } else {
+                // Create Mode: Send POST request
+                response = await apiRequest('/products', 'POST', { name, price, stock });
+            }
+
+            if (response.success) {
+                 const actionMsg = appState.editingProductId ? 'Updated' : 'Saved';
+                 alertMessage(`Product '${name}' ${actionMsg} successfully!`, 'success');
+                
+                // Clear form
+                document.getElementById('product-name').value = '';
+                document.getElementById('product-price').value = '';
+                document.getElementById('product-stock').value = '';
+                
+                // Reset Edit Mode
+                appState.editingProductId = null;
+                // Reset Button Text
+                const btn = document.getElementById('btn-save-product');
+                btn.innerHTML = '<i data-lucide="refresh-cw" class="w-5 h-5 mr-2"></i> Save Product Data';
+                lucide.createIcons();
+
+                fetchInventoryAndRender('inventoryDashboard'); // Refresh the list
+            } else {
+                 alertMessage(`Failed to save product: ${response.error}`, 'error');
+            }
+        }
+        
+        function editProduct(id) {
+            const product = appState.inventory.find(p => p.product_id === id);
+            if (!product) {
+                alertMessage('Product not found in local cache.', 'error');
+                return;
+            }
+
+            // Populate the form fields
+            document.getElementById('product-name').value = product.name;
+            document.getElementById('product-price').value = product.price;
+            document.getElementById('product-stock').value = product.stock;
+
+            // Set global state to track this specific ID
+            appState.editingProductId = id;
+
+            // Change the save button text to indicate an update
+            const btn = document.getElementById('btn-save-product');
+            btn.innerHTML = '<i data-lucide="save" class="w-5 h-5 mr-2"></i> Update Product';
+            lucide.createIcons();
+
+            alertMessage(`Editing ${product.name}. Modify fields and click Update.`, 'primary-indigo');
+            
+            // Optional: Scroll to top to see the form
+            document.getElementById('product-name').focus();
+        }
+
+        async function deleteProduct(id) {
+            const response = await apiRequest(`/products/${id}`, 'DELETE');
+            
+            if (response.success) {
+                alertMessage(`Product ID ${id} was deleted.`, 'error');
+                fetchInventoryAndRender('inventoryDashboard'); // Refresh the list
+            } else {
+                alertMessage(`Failed to delete product: ${response.error}`, 'error');
+            }
+        }
+
+        // --- Cashier Functions ---
+        
+        function selectCashierProduct(product_id) {
+            // Only allow selection if in stock
+            const product = appState.inventory.find(p => p.product_id === product_id);
+            if (product && product.stock <= 0) {
+                 alertMessage('Cannot select this item; it is out of stock.', 'error');
+                 return;
+            }
+
+            appState.selectedCashierProduct = product_id;
+            
+            // Highlight the selected card and remove highlight from others
+            document.querySelectorAll('.cashier-product-card').forEach(card => {
+                card.classList.remove('ring-4', 'ring-green-500', 'bg-green-50');
+            });
+            const selectedCard = document.getElementById(`cashier-product-${product_id}`);
+            if (selectedCard) {
+                selectedCard.classList.add('ring-4', 'ring-green-500', 'bg-green-50');
+            }
+            
+            document.getElementById('receipt-quantity').focus();
+        }
+
+        // Renders the product list specifically for the cashier dashboard
+        function renderProductListForCashier() {
+             const listContainer = document.getElementById('cashier-product-list');
+             const inventory = appState.inventory;
+             
+             let html = '';
+             inventory.forEach(item => {
+                 // Cashier only sees availability status, not count
+                 const isInStock = item.stock > 0;
+                 const availabilityClass = isInStock ? 'text-green-600' : 'text-red-600';
+                 const cursorClass = isInStock ? 'cursor-pointer' : 'cursor-not-allowed opacity-70';
+                 const clickHandler = isInStock ? `selectCashierProduct(${item.product_id})` : '';
+
+                 const isSelected = item.product_id === appState.selectedCashierProduct;
+                 const selectedClass = isSelected ? 'ring-4 ring-green-500 bg-green-50' : 'bg-white hover:bg-gray-50';
+
+                 html += `
+                     <div id="cashier-product-${item.product_id}" onclick="${clickHandler}" class="cashier-product-card p-3 rounded-lg shadow-sm border ${selectedClass} ${cursorClass}">
+                         <p class="font-medium text-gray-800">${item.name}</p>
+                         <p class="text-lg font-bold text-primary-indigo">$${item.price.toFixed(2)}</p>
+                         <p class="text-xs font-semibold ${availabilityClass}">Availability: ${isInStock ? 'In Stock' : 'Out of Stock'}</p>
+                     </div>
+                 `;
+             });
+             
+             if (html === '') {
+                  html = '<p class="text-center text-gray-500 py-6">No products available for sale.</p>';
+             }
+             listContainer.innerHTML = html;
+        }
+
+
+        // Adds an item to the shopping cart
+        function addToCart() {
+            const productId = appState.selectedCashierProduct;
+            const quantity = parseInt(document.getElementById('receipt-quantity').value);
+
+            if (!productId) {
+                alertMessage("Please select a product from the list first!", 'error');
+                return;
+            }
+
+            const product = appState.inventory.find(p => p.product_id === productId);
+
+            if (!product) {
+                alertMessage("Error: Selected product not found in inventory.", 'error');
+                return;
+            }
+            if (quantity <= 0 || product.stock < quantity) {
+                alertMessage(`Invalid quantity (${quantity}) or not enough stock (Max: ${product.stock}).`, 'error');
+                return;
+            }
+
+            const existingItem = appState.cart.find(item => item.id === productId);
+
+            // If the item is already there, check max stock before incrementing
+            if (existingItem) {
+                if (existingItem.quantity + quantity > product.stock) {
+                    alertMessage("Adding this quantity exceeds available stock!", 'error');
+                    return;
+                }
+                existingItem.quantity += quantity;
+            } else {
+                appState.cart.push({
+                    id: productId,
+                    name: product.name,
+                    price: product.price,
+                    quantity: quantity,
+                });
+            }
+            
+            // Deselect the product and clear inputs for the next item
+            appState.selectedCashierProduct = null;
+            document.getElementById('receipt-quantity').value = 1;
+            
+            renderCart(); // Update the UI
+            renderProductListForCashier(); // Update highlights
+            alertMessage(`Added ${quantity} x ${product.name} to the cart.`, 'success');
+        }
+
+        // Renders the current contents of the cart and calculates the total
+        function renderCart() {
+            const cartList = document.getElementById('cart-list');
+            const totalDisplay = document.getElementById('receipt-total');
+            let total = 0;
+            let html = '';
+
+            if (appState.cart.length === 0) {
+                html = '<p class="text-center text-gray-500 py-6">No items added yet. Ready for a new sale!</p>';
+            } else {
+                appState.cart.forEach(item => {
+                    const subtotal = item.price * item.quantity;
+                    total += subtotal;
+                    html += `
+                        <div class="flex justify-between border-b py-2 text-sm">
+                            <span class="w-1/2">${item.name}</span>
+                            <span class="w-1/4 text-center">${item.quantity} x $${item.price.toFixed(2)}</span>
+                            <span class="w-1/4 text-right font-medium">$${subtotal.toFixed(2)}</span>
+                        </div>
+                    `;
+                });
+            }
+
+            cartList.innerHTML = html;
+            totalDisplay.textContent = `$${total.toFixed(2)}`;
+        }
+
+        // Finalizes the transaction, simulates updating inventory and sales logs
+        async function finalizeReceipt() {
+            if (appState.cart.length === 0) {
+                alertMessage('Can\'t finalize—the cart is empty!', 'error');
+                return;
+            }
+            
+            const total = parseFloat(document.getElementById('receipt-total').textContent.substring(1));
+            const cashierId = appState.userId;
+            const itemsCount = appState.cart.reduce((sum, item) => sum + item.quantity, 0);
+
+            const saleData = {
+                cart: appState.cart,
+                cashierId: cashierId,
+                total: total,
+                itemsCount: itemsCount
+            };
+            
+            const response = await apiRequest('/sales', 'POST', saleData);
+            
+            if (response.success) {
+                alertMessage(`Sale Complete! Total: $${total.toFixed(2)}. (Records updated)`, 'success');
+                
+                // Clear state
+                appState.cart = [];
+                appState.selectedCashierProduct = null;
+                
+                renderCart();
+                fetchInventoryAndRender('cashierDashboard'); // Re-fetch to update cached stock
+            } else {
+                alertMessage(`Sale failed: ${response.error}`, 'error');
+            }
+        }
+
+        // --- Shipment Manager Functions ---
+        
+        async function fetchShipmentsAndRender(dashboardId) {
+            const listContainerId = (dashboardId === 'shipmentDashboard' ? 'shipment-records-list' : 'owner-shipment-list');
+            const listContainer = document.getElementById(listContainerId);
+            if (!listContainer) return;
+            
+            listContainer.innerHTML = '<p class="text-center py-6 text-gray-500">Loading shipment data...</p>';
+            
+            const response = await apiRequest('/shipments');
+            if (!response.success) {
+                listContainer.innerHTML = `<p class="text-center py-6 text-red-600">Failed to load shipments: ${response.error}</p>`;
+                return;
+            }
+            
+            appState.shipmentRecords = response.data;
+            renderShipmentRecords(dashboardId);
+        }
+        
+        // Marks a pending shipment as completed and generates a mock tracking number
+        async function markShipmentDone(id) {
+            const response = await apiRequest(`/shipments/${id}`, 'PUT', { status: 'Done' });
+            
+            if (response.success) {
+                alertMessage(`Shipment is now DONE. Tracking: ${response.data.tracking_number}`, 'success');
+                fetchShipmentsAndRender('shipmentDashboard');
+            } else {
+                alertMessage(`Failed to mark shipment done: ${response.error}`, 'error');
+            }
+        }
+
+        // Reverts a shipment back to pending status
+        async function markShipmentPending(id) {
+            const response = await apiRequest(`/shipments/${id}`, 'PUT', { status: 'Pending' });
+            
+            if (response.success) {
+                alertMessage(`Shipment reverted to PENDING.`, 'error');
+                fetchShipmentsAndRender('shipmentDashboard');
+            } else {
+                alertMessage(`Failed to revert shipment status: ${response.error}`, 'error');
+            }
+        }
+
+
+        // Draws the list of all shipment records
+        function renderShipmentRecords(dashboardId = 'shipmentDashboard') {
+            
+            let listContainerId = (dashboardId === 'shipmentDashboard' ? 'shipment-records-list' : 'owner-shipment-list');
+            let searchInputId = (dashboardId === 'shipmentDashboard' ? 'shipment-search-input' : 'owner-report-shipment-search');
+
+            const listContainer = document.getElementById(listContainerId);
+            const records = appState.shipmentRecords;
+            const query = document.getElementById(searchInputId) ? document.getElementById(searchInputId).value.toLowerCase() : '';
+            
+            if (!listContainer) return;
+            
+            let html = '';
+            
+            records.forEach(record => {
+                // Check if item matches search query
+                if (query && !(record.customer_name.toLowerCase().includes(query) || record.shipping_address.toLowerCase().includes(query) || (record.tracking_number && record.tracking_number.toLowerCase().includes(query)))) {
+                    return; // Skip if no match
+                }
+                
+                const isPending = record.status === 'Pending';
+                const statusColor = isPending ? 'bg-yellow-100 text-yellow-700' : 'bg-green-100 text-green-700';
+                
+                let actionButton = '';
+                // Only Shipment Manager sees the action buttons
+                if (dashboardId === 'shipmentDashboard') {
+                    if (isPending) {
+                        // Action: Mark as Done
+                        actionButton = `
+                            <button onclick="markShipmentDone(${record.shipment_id})" class="bg-green-600 text-white px-3 py-1 rounded-md text-xs hover:bg-green-700 transition font-medium shadow-sm">Mark Done</button>
+                        `;
+                    } else {
+                        // Action: Revert to Pending
+                         actionButton = `
+                            <button onclick="markShipmentPending(${record.shipment_id})" class="bg-red-500 text-white px-3 py-1 rounded-md text-xs hover:bg-red-600 transition font-medium shadow-sm">Mark Undone</button>
+                        `;
+                    }
+                }
+
+                html += `
+                    <div class="flex justify-between items-center p-3 border-b hover:bg-gray-50">
+                        <div class="flex-grow">
+                            <p class="font-medium text-gray-800">${record.customer_name}</p>
+                            <p class="text-xs text-gray-500">${record.shipping_address}</p>
+                            <p class="text-xs text-gray-500">Tracking: ${record.tracking_number || 'N/A'}</p>
+                        </div>
+                        <div class="flex flex-col items-end space-y-1">
+                            <span class="px-3 py-1 text-xs font-semibold rounded-full ${statusColor}">${record.status}</span>
+                            ${actionButton}
+                        </div>
+                    </div>
+                `;
+            });
+            
+             if (html === '') {
+                 html = '<p class="text-center text-gray-500 py-6">No shipments match your search or no records found.</p>';
+            }
+
+            listContainer.innerHTML = html;
+        }
+        
+        // Client-side search for shipment records (called by Shipment Manager and Owner)
+        function searchShipments(dashboardId) {
+             renderShipmentRecords(dashboardId);
+        }
+
+        // Adds a new shipment to the list, automatically set to "Pending"
+        async function addShipment() {
+            const customer = document.getElementById('shipment-customer').value;
+            const address = document.getElementById('shipment-address').value;
+            
+            if (!customer || !address) {
+                alertMessage('Need both Customer Name and Address to record a shipment.', 'error');
+                return;
+            }
+            
+            const response = await apiRequest('/shipments', 'POST', { customer, address });
+            
+            if (response.success) {
+                alertMessage('New shipment record added! Get it ready to go!', 'success');
+                
+                // Clear form fields
+                document.getElementById('shipment-customer').value = '';
+                document.getElementById('shipment-address').value = '';
+
+                fetchShipmentsAndRender('shipmentDashboard'); // Refresh list
+            } else {
+                alertMessage(`Failed to add shipment: ${response.error}`, 'error');
+            }
+        }
+
+
+        // Start the application by showing the main role menu
+        document.addEventListener('DOMContentLoaded', () => {
+            changeView('mainMenu');
+        });
+    </script>
+</head>
+<body class="min-h-screen font-sans flex items-center justify-center py-10 transition-colors duration-300">
+
+    <video autoplay loop muted id="mainMenuVideo">
+        <source src="file:///D:/anik/main.mp4" type="video/mp4">
+        Your browser does not support the video tag.
+    </video>
+    
+    <div class="w-full max-w-7xl p-4 sm:p-6 lg:p-8 relative z-10">
+        <header class="text-center py-6 mb-8 bg-white/90 rounded-xl shadow-lg border-t-4 border-primary-indigo backdrop-blur-sm">
+            <h1 class="text-3xl font-extrabold text-primary-indigo">Retail Management System</h1>
+        </header>
+
+        <div id="status-alert" class="hidden p-4 mb-6 rounded-lg font-medium text-sm text-center shadow-md"></div>
+
+        <div id="mainMenu" class="space-y-8">
+            <h2 class="text-3xl font-bold text-gray-900 text-center mb-6">Select Your Role to Log In</h2>
+            
+            <div class="grid lg:grid-cols-5 md:grid-cols-3 sm:grid-cols-2 gap-4">
+                
+                <div onclick="selectRole('Owner')" class="role-card bg-white/90 p-5 rounded-xl shadow-2xl border-t-4 border-red-600 flex flex-col items-center backdrop-blur-sm">
+                    <i data-lucide="crown" class="w-10 h-10 text-red-600 mb-2"></i>
+                    <p class="text-lg font-bold text-red-600">Owner</p>
+                    <p class="text-xs text-gray-500 mt-1 text-center">User Management & Full Data Access</p>
+                </div>
+
+                <div onclick="selectRole('Inventory Manager')" class="role-card bg-white/90 p-5 rounded-xl shadow-2xl border-t-4 border-orange-600 flex flex-col items-center backdrop-blur-sm">
+                    <i data-lucide="archive" class="w-10 h-10 text-orange-600 mb-2"></i>
+                    <p class="text-lg font-bold text-orange-600">Inventory Manager</p>
+                    <p class="text-xs text-gray-500 mt-1 text-center">Add, Update, & Manage Stock</p>
+                </div>
+
+                <div onclick="selectRole('Cashier')" class="role-card bg-white/90 p-5 rounded-xl shadow-2xl border-t-4 border-green-600 flex flex-col items-center backdrop-blur-sm">
+                    <i data-lucide="dollar-sign" class="w-10 h-10 text-green-600 mb-2"></i>
+                    <p class="text-lg font-bold text-green-600">Cashier</p>
+                    <p class="text-xs text-gray-500 mt-1 text-center">Sales & Automatic Receipt Generation</p>
+                </div>
+                
+                <div onclick="selectRole('Shipment Manager')" class="role-card bg-white/90 p-5 rounded-xl shadow-2xl border-t-4 border-blue-600 flex flex-col items-center backdrop-blur-sm">
+                    <i data-lucide="truck" class="w-10 h-10 text-blue-600 mb-2"></i>
+                    <p class="text-lg font-bold text-blue-600">Shipment Manager</p>
+                    <p class="text-xs text-gray-500 mt-1 text-center">Manage Shipping Records</p>
+                </div>
+
+                <div onclick="selectRole('Staff')" class="role-card bg-white/90 p-5 rounded-xl shadow-2xl border-t-4 border-secondary-teal flex flex-col items-center backdrop-blur-sm">
+                    <i data-lucide="user" class="w-10 h-10 text-secondary-teal mb-2"></i>
+                    <p class="text-lg font-bold text-secondary-teal">Staff</p>
+                    <p class="text-xs text-gray-500 mt-1 text-center">Product Search & Price Check</p>
+                </div>
+
+            </div>
+            
+            
+        </div>
+
+        <div id="loginScreen" class="hidden max-w-md mx-auto bg-white p-8 rounded-xl shadow-lg border-t-4 border-primary-indigo">
+            <div class="text-center mb-6">
+                <i id="login-role-icon" data-lucide="log-in" class="w-10 h-10 mx-auto mb-2 text-primary-indigo"></i>
+                <h3 id="login-role-title" class="text-2xl font-bold text-gray-800">Role Login</h3>
+            </div>
+            
+            <form onsubmit="event.preventDefault(); attemptLogin()">
+                <div class="mb-4">
+                    <label for="user-id" class="block text-sm font-medium text-gray-700 mb-1">User ID</label>
+                    <input type="text" id="user-id" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-primary-indigo focus:border-primary-indigo" required placeholder="Enter your unique ID">
+                </div>
+                <div class="mb-6">
+                    <label for="password" class="block text-sm font-medium text-gray-700 mb-1">Password (Min 8 Chars)</label>
+                    <input type="password" id="password" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-primary-indigo focus:border-primary-indigo" required placeholder="Enter your password">
+                </div>
+                <button type="submit" class="w-full bg-primary-indigo text-white p-3 rounded-lg font-semibold hover:bg-indigo-600 transition duration-150 shadow-md">
+                    <i data-lucide="log-in" class="w-5 h-5 inline mr-2"></i>
+                    Login </button>
+            </form>
+            
+            <button onclick="changeView('mainMenu')" class="w-full mt-4 text-sm text-gray-600 hover:text-primary-indigo transition">
+                <i data-lucide="arrow-left" class="w-4 h-4 inline mr-1"></i>
+                Back to Role Selection
+            </button>
+        </div>
+
+        <div id="ownerDashboard" class="hidden">
+            <div class="flex justify-between items-center mb-6 p-4 bg-white rounded-lg shadow-md border-b-4 border-red-600">
+                <h2 class="text-3xl font-bold text-red-600">Owner Dashboard</h2>
+                <div class="text-sm text-gray-500 dashboard-user-info">Logged in as: Owner (N/A)</div>
+                <button onclick="changeView('mainMenu')" class="bg-gray-200 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-300 transition">Log Out</button>
+            </div>
+
+            <div class="grid md:grid-cols-3 gap-6">
+                
+                <div class="bg-white p-6 rounded-xl shadow-lg border-t-4 border-red-500 h-fit">
+                    <h3 class="text-xl font-semibold text-gray-800 mb-4 flex items-center">
+                        <i data-lucide="user-plus" class="w-6 h-6 mr-2 text-red-600"></i>
+                        Create New User Profile
+                    </h3>
+                    <form onsubmit="event.preventDefault(); createNewProfile()" class="space-y-4">
+                        <div>
+                            <label for="new-profile-name" class="block text-sm font-medium text-gray-700">User ID (e.g., JaneDoe)</label>
+                            <input type="text" id="new-profile-name" class="w-full p-3 border border-gray-300 rounded-lg" required>
+                        </div>
+                        <div>
+                            <label for="new-profile-password" class="block text-sm font-medium text-gray-700">Temporary Password (Min 8 Chars)</label>
+                            <input type="password" id="new-profile-password" class="w-full p-3 border border-gray-300 rounded-lg" required>
+                        </div>
+                        <div>
+                            <label for="new-profile-role" class="block text-sm font-medium text-gray-700">Assign Role</label>
+                            <select id="new-profile-role" class="w-full p-3 border border-gray-300 rounded-lg appearance-none bg-white" required>
+                                <option value="" disabled selected>Select a role...</option>
+                                <option value="Owner">Owner</option>
+                                <option value="Inventory Manager">Inventory Manager</option>
+                                <option value="Cashier">Cashier</option>
+                                <option value="Shipment Manager">Shipment Manager</option>
+                                <option value="Staff">Staff</option>
+                            </select>
+                        </div>
+                        <button type="submit" class="w-full bg-red-600 text-white p-3 rounded-lg font-semibold hover:bg-red-700 transition shadow-md flex items-center justify-center">
+                            <i data-lucide="save" class="w-5 h-5 mr-2"></i>
+                            Save New Profile
+                        </button>
+                    </form>
+                </div>
+
+                <div class="bg-white p-6 rounded-xl shadow-lg border-t-4 border-red-500 h-fit">
+                    <h3 class="text-xl font-semibold text-gray-800 mb-4 flex items-center">
+                        <i data-lucide="bar-chart-3" class="w-6 h-6 mr-2 text-red-600"></i>
+                        System Metrics
+                    </h3>
+                    <div class="space-y-3">
+                        <div class="p-3 bg-red-50 rounded-lg flex justify-between items-center">
+                            <span class="font-medium text-gray-700">Total Users</span>
+                            <span id="metric-total-users" class="text-2xl font-bold text-red-600">--</span>
+                        </div>
+                        <div class="p-3 bg-red-50 rounded-lg flex justify-between items-center">
+                            <span class="font-medium text-gray-700">Total Sales (YTD)</span>
+                            <span id="metric-total-sales" class="text-2xl font-bold text-red-600">--</span>
+                        </div>
+                        <div class="p-3 bg-red-50 rounded-lg flex justify-between items-center">
+                            <span class="font-medium text-gray-700">Low Stock Items</span>
+                            <span id="metric-low-stock" class="text-2xl font-bold text-red-600">--</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="md:col-span-1 bg-white p-6 rounded-xl shadow-lg border-t-4 border-red-500 h-fit">
+                    <h3 class="text-xl font-semibold text-gray-800 mb-4 flex items-center">
+                        <i data-lucide="scroll-text" class="w-6 h-6 mr-2 text-red-600"></i>
+                        Select Report
+                    </h3>
+                    <div id="owner-report-buttons" class="space-y-3">
+                        <button id="btn-report-inventory" onclick="toggleOwnerReport('inventory')" class="w-full p-3 rounded-lg font-medium transition flex items-center bg-red-700 text-white hover:bg-red-800">
+                            <i data-lucide="package" class="w-5 h-5 mr-2"></i> Inventory Report
+                        </button>
+                        <button id="btn-report-sales" onclick="toggleOwnerReport('sales')" class="w-full p-3 rounded-lg font-medium transition flex items-center bg-red-50 text-red-700 hover:bg-red-100">
+                            <i data-lucide="dollar-sign" class="w-5 h-5 mr-2"></i> Sales Report
+                        </button>
+                        <button id="btn-report-shipment" onclick="toggleOwnerReport('shipment')" class="w-full p-3 rounded-lg font-medium transition flex items-center bg-red-50 text-red-700 hover:bg-red-100">
+                            <i data-lucide="truck" class="w-5 h-5 mr-2"></i> Shipment Report
+                        </button>
+                        <button id="btn-report-users" onclick="toggleOwnerReport('users')" class="w-full p-3 rounded-lg font-medium transition flex items-center bg-red-50 text-red-700 hover:bg-red-100">
+                            <i data-lucide="users" class="w-5 h-5 mr-2"></i> User Profiles
+                        </button>
+                    </div>
+                </div>
+
+                <div class="md:col-span-3 bg-white p-6 rounded-xl shadow-lg border-t-4 border-primary-indigo">
+                    
+                    <div id="owner-report-inventory" class="owner-report-panel">
+                        <h3 class="text-xl font-semibold text-gray-800 mb-4 flex items-center">
+                            <i data-lucide="package" class="w-6 h-6 mr-2 text-primary-indigo"></i>
+                            Inventory Report (Full Stock List)
+                        </h3>
+                        <div class="mb-4">
+                            <input type="text" id="owner-report-inventory-search" class="owner-search-input w-full p-3 border border-gray-300 rounded-lg" oninput="renderInventoryList('ownerDashboard')" placeholder="Search products by name or ID...">
+                        </div>
+                        <div id="owner-inventory-list" class="scroll-list border rounded-lg">
+                            </div>
+                    </div>
+                    
+                    <div id="owner-report-sales" class="owner-report-panel hidden">
+                        <h3 class="text-xl font-semibold text-gray-800 mb-4 flex items-center">
+                            <i data-lucide="dollar-sign" class="w-6 h-6 mr-2 text-green-600"></i>
+                            Sales Report (Transaction History)
+                        </h3>
+                        <div class="mb-4">
+                            <input type="text" id="owner-report-sales-search" class="owner-search-input w-full p-3 border border-gray-300 rounded-lg" oninput="renderSalesRecords()" placeholder="Search transactions by ID, Cashier, or Date...">
+                        </div>
+                        <div id="owner-sales-list" class="scroll-list border rounded-lg">
+                            </div>
+                    </div>
+
+                    <div id="owner-report-shipment" class="owner-report-panel hidden">
+                        <h3 class="text-xl font-semibold text-gray-800 mb-4 flex items-center">
+                            <i data-lucide="truck" class="w-6 h-6 mr-2 text-blue-600"></i>
+                            Shipment Report (Logistics Overview)
+                        </h3>
+                        <div class="mb-4">
+                            <input type="text" id="owner-report-shipment-search" class="owner-search-input w-full p-3 border border-gray-300 rounded-lg" oninput="searchShipments('ownerDashboard')" placeholder="Search shipments by Customer, Address, or Tracking...">
+                        </div>
+                        <div id="owner-shipment-list" class="scroll-list border rounded-lg">
+                            </div>
+                    </div>
+                    
+                    <div id="owner-report-users" class="owner-report-panel hidden">
+                        <h3 class="text-xl font-semibold text-gray-800 mb-4 flex items-center">
+                            <i data-lucide="users" class="w-6 h-6 mr-2 text-red-600"></i>
+                            User Profiles (Management)
+                        </h3>
+                        <div class="mb-4">
+                            <input type="text" id="owner-report-users-search" class="owner-search-input w-full p-3 border border-gray-300 rounded-lg" oninput="renderUserProfiles()" placeholder="Search users by ID or Role...">
+                        </div>
+                        <div id="owner-users-list" class="scroll-list border rounded-lg">
+                            </div>
+                    </div>
+
+                </div>
+
+            </div>
+        </div>
+        
+        <div id="inventoryDashboard" class="hidden">
+            <div class="flex justify-between items-center mb-6 p-4 bg-white rounded-lg shadow-md border-b-4 border-orange-600">
+                <h2 class="text-3xl font-bold text-orange-600">Inventory Dashboard</h2>
+                <div class="text-sm text-gray-500 dashboard-user-info">Logged in as: Inventory Manager (N/A)</div>
+                <button onclick="changeView('mainMenu')" class="bg-gray-200 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-300 transition">Log Out</button>
+            </div>
+
+            <div class="grid md:grid-cols-3 gap-6">
+                
+                <div class="md:col-span-1 bg-white p-6 rounded-xl shadow-lg border-t-4 border-orange-500 h-fit">
+                    <h3 class="text-xl font-semibold text-gray-800 mb-4 flex items-center">
+                        <i data-lucide="box" class="w-6 h-6 mr-2 text-orange-600"></i>
+                        Add/Update Product
+                    </h3>
+                    <form onsubmit="event.preventDefault(); addOrUpdateProduct()" class="space-y-4">
+                        <div>
+                            <label for="product-name" class="block text-sm font-medium text-gray-700">Product Name</label>
+                            <input type="text" id="product-name" class="w-full p-3 border border-gray-300 rounded-lg" required placeholder="Laptop Pro">
+                        </div>
+                        <div>
+                            <label for="product-price" class="block text-sm font-medium text-gray-700">Price ($)</label>
+                            <input type="number" id="product-price" step="0.01" class="w-full p-3 border border-gray-300 rounded-lg" required placeholder="1200.00">
+                        </div>
+                        <div>
+                            <label for="product-stock" class="block text-sm font-medium text-gray-700">Stock Quantity</label>
+                            <input type="number" id="product-stock" class="w-full p-3 border border-gray-300 rounded-lg" required placeholder="15">
+                        </div>
+                        <button type="submit" id="btn-save-product" class="w-full bg-orange-600 text-white p-3 rounded-lg font-semibold hover:bg-orange-700 transition shadow-md flex items-center justify-center">
+                            <i data-lucide="refresh-cw" class="w-5 h-5 mr-2"></i>
+                            Save Product Data
+                        </button>
+                    </form>
+                </div>
+
+                <div class="md:col-span-2 bg-white p-6 rounded-xl shadow-lg border-t-4 border-orange-500">
+                    <h3 class="text-xl font-semibold text-gray-800 mb-4 flex items-center">
+                        <i data-lucide="list-checks" class="w-6 h-6 mr-2 text-orange-600"></i>
+                        Current Stock List
+                    </h3>
+                    <div class="mb-4">
+                        <input type="text" id="inventoryDashboard-search-input" oninput="searchInventory('inventoryDashboard')" placeholder="Search products by name or ID..." class="w-full p-3 border border-gray-300 rounded-lg">
+                    </div>
+                    <div id="inventoryDashboard-inventory-list" class="scroll-list border rounded-lg">
+                        </div>
+                </div>
+
+            </div>
+        </div>
+        
+        <div id="cashierDashboard" class="hidden">
+            <div class="flex justify-between items-center mb-6 p-4 bg-white rounded-lg shadow-md border-b-4 border-green-600">
+                <h2 class="text-3xl font-bold text-green-600">Cashier POS Terminal</h2>
+                <div class="text-sm text-gray-500 dashboard-user-info">Logged in as: Cashier (N/A)</div>
+                <button onclick="changeView('mainMenu')" class="bg-gray-200 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-300 transition">Log Out</button>
+            </div>
+
+            <div class="grid md:grid-cols-3 gap-6">
+                
+                <div class="bg-white p-6 rounded-xl shadow-lg border-t-4 border-green-500 md:col-span-1 h-[470px] overflow-hidden">
+                    <h3 class="text-xl font-semibold text-gray-800 mb-4 flex items-center">
+                        <i data-lucide="layout-list" class="w-6 h-6 mr-2 text-green-600"></i>
+                        Product List (Click to Select)
+                    </h3>
+                    <div id="cashier-product-list" class="scroll-list space-y-3">
+                         </div>
+                </div>
+
+                <div class="bg-white p-6 rounded-xl shadow-lg border-t-4 border-green-500 md:col-span-2">
+                    <h3 class="text-xl font-semibold text-gray-800 mb-4 flex items-center">
+                        <i data-lucide="receipt" class="w-6 h-6 mr-2 text-green-600"></i>
+                        Current Receipt
+                    </h3>
+                    <div class="flex space-x-4 mb-4">
+                        <div class="w-1/3">
+                            <label for="receipt-quantity" class="block text-sm font-medium text-gray-700">Quantity</label>
+                            <input type="number" id="receipt-quantity" min="1" value="1" class="w-full p-3 border border-gray-300 rounded-lg" required>
+                        </div>
+                        <div class="w-2/3">
+                             <label class="block text-sm font-medium text-gray-700 opacity-0">Add Button Placeholder</label>
+                             <button onclick="addToCart()" class="w-full bg-green-600 text-white p-3 rounded-lg font-semibold hover:bg-green-700 transition shadow-md flex items-center justify-center">
+                                 <i data-lucide="plus" class="w-5 h-5 mr-2"></i>
+                                 Add Selected Item
+                             </button>
+                        </div>
+                    </div>
+                    
+                    <div class="border border-gray-300 rounded-lg p-4 bg-gray-50 mb-4 min-h-[200px] max-h-[250px] overflow-y-auto">
+                        <div id="cart-list">
+                            </div>
+                    </div>
+                    
+                    <div class="flex justify-between items-center text-2xl font-bold mb-4 p-2 border-t-2 border-green-300">
+                        <span>TOTAL:</span>
+                        <span id="receipt-total" class="text-green-700">$0.00</span>
+                    </div>
+
+                    <button onclick="finalizeReceipt()" class="w-full bg-secondary-teal text-white p-3 rounded-lg font-semibold hover:bg-teal-600 transition shadow-md flex items-center justify-center">
+                        <i data-lucide="credit-card" class="w-5 h-5 mr-2"></i>
+                        Finalize Sale
+                    </button>
+                </div>
+            </div>
+        </div>
+        
+        <div id="shipmentDashboard" class="hidden">
+            <div class="flex justify-between items-center mb-6 p-4 bg-white rounded-lg shadow-md border-b-4 border-blue-600">
+                <h2 class="text-3xl font-bold text-blue-600">Shipment Manager</h2>
+                <div class="text-sm text-gray-500 dashboard-user-info">Logged in as: Shipment Manager (N/A)</div>
+                <button onclick="changeView('mainMenu')" class="bg-gray-200 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-300 transition">Log Out</button>
+            </div>
+
+            <div class="grid md:grid-cols-3 gap-6">
+                
+                <div class="md:col-span-1 bg-white p-6 rounded-xl shadow-lg border-t-4 border-blue-500 h-fit">
+                    <h3 class="text-xl font-semibold text-gray-800 mb-4 flex items-center">
+                        <i data-lucide="package-plus" class="w-6 h-6 mr-2 text-blue-600"></i>
+                        Record New Shipment
+                    </h3>
+                    <form onsubmit="event.preventDefault(); addShipment()" class="space-y-4">
+                        <div>
+                            <label for="shipment-customer" class="block text-sm font-medium text-gray-700">Customer Name</label>
+                            <input type="text" id="shipment-customer" class="w-full p-3 border border-gray-300 rounded-lg" required placeholder="Alice Johnson">
+                        </div>
+                        <div>
+                            <label for="shipment-address" class="block text-sm font-medium text-gray-700">Shipping Address</label>
+                            <textarea id="shipment-address" class="w-full p-3 border border-gray-300 rounded-lg" required placeholder="123 Main St, Anytown, USA"></textarea>
+                        </div>
+                        <button type="submit" class="w-full bg-blue-600 text-white p-3 rounded-lg font-semibold hover:bg-blue-700 transition shadow-md flex items-center justify-center">
+                            <i data-lucide="map-pin" class="w-5 h-5 mr-2"></i>
+                            Save Record (Pending)
+                        </button>
+                    </form>
+                </div>
+
+                <div class="md:col-span-2 bg-white p-6 rounded-xl shadow-lg border-t-4 border-blue-500">
+                    <h3 class="text-xl font-semibold text-gray-800 mb-4 flex items-center">
+                        <i data-lucide="clipboard-list" class="w-6 h-6 mr-2 text-blue-600"></i>
+                        Shipment Logs
+                    </h3>
+                    <div class="mb-4">
+                        <input type="text" id="shipment-search-input" oninput="searchShipments('shipmentDashboard')" placeholder="Search shipments by customer or address..." class="w-full p-3 border border-gray-300 rounded-lg">
+                    </div>
+                    <div id="shipment-records-list" class="scroll-list border rounded-lg">
+                        </div>
+                </div>
+
+            </div>
+        </div>
+        
+        <div id="staffDashboard" class="hidden">
+            <div class="flex justify-between items-center mb-6 p-4 bg-white rounded-lg shadow-md border-b-4 border-secondary-teal">
+                <h2 class="text-3xl font-bold text-secondary-teal">Staff Product Lookup</h2>
+                <div class="text-sm text-gray-500 dashboard-user-info">Logged in as: Staff (N/A)</div>
+                <button onclick="changeView('mainMenu')" class="bg-gray-200 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-300 transition">Log Out</button>
+            </div>
+
+            <div class="bg-white p-6 rounded-xl shadow-lg border-t-4 border-secondary-teal">
+                <h3 class="text-xl font-semibold text-gray-800 mb-4 flex items-center">
+                    <i data-lucide="search" class="w-6 h-6 mr-2 text-secondary-teal"></i>
+                    Product and Stock Search
+                </h3>
+                <div class="mb-4">
+                    <input type="text" id="staffDashboard-search-input" oninput="searchInventory('staffDashboard')" placeholder="Search products by name or ID..." class="w-full p-3 border border-gray-300 rounded-lg">
+                </div>
+                <div id="staffDashboard-inventory-list" class="scroll-list border rounded-lg">
+                    </div>
+            </div>
+        </div>
+
+
+    </div>
+
+</body>
+</html>
